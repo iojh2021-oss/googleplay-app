@@ -1,9 +1,10 @@
 package com.iojh.blindphoneradar
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
@@ -27,7 +28,14 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
         title = "Blind Phone Radar"
         tts = TextToSpeech(this, this)
         buildUi()
-        radar = BleRadar(this) { observations -> runOnUiThread { render(observations) } }
+        radar = BleRadar(
+            this,
+            onUpdate = { observations -> runOnUiThread { render(observations) } },
+            onError = { message -> runOnUiThread {
+                running = false
+                status.text = message
+            } }
+        )
     }
 
     private fun buildUi() {
@@ -53,33 +61,54 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
         setContentView(root)
     }
 
-    private fun toggle() {
-        if (running) stopRadar() else requestAndStart()
-    }
+    private fun toggle() { if (running) stopRadar() else requestAndStart() }
 
     private fun requestAndStart() {
-        if (!BluetoothAdapter.getDefaultAdapter().isEnabled) {
-            startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+        val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
+        val adapter = manager?.adapter
+        if (adapter == null) {
+            status.text = "Bluetooth روی این گوشی وجود ندارد"
             return
         }
-        val permissions = mutableListOf<String>()
-        if (android.os.Build.VERSION.SDK_INT >= 31) permissions += Manifest.permission.BLUETOOTH_SCAN
-        if (android.os.Build.VERSION.SDK_INT >= 31) permissions += Manifest.permission.BLUETOOTH_CONNECT
-        if (android.os.Build.VERSION.SDK_INT <= 30) permissions += Manifest.permission.ACCESS_FINE_LOCATION
-        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 100) else startRadar()
+
+        if (Build.VERSION.SDK_INT >= 31) {
+            val missing = listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+                .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isNotEmpty()) {
+                requestPermissions(missing.toTypedArray(), 100)
+                return
+            }
+        } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 100)
+            return
+        }
+
+        try {
+            if (!adapter.isEnabled) {
+                startActivity(Intent(BluetoothManager.ACTION_REQUEST_ENABLE))
+                status.text = "Bluetooth را روشن کنید"
+                return
+            }
+        } catch (_: SecurityException) {
+            status.text = "مجوز دسترسی به وضعیت Bluetooth کافی نیست"
+            return
+        }
+        startRadar()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) startRadar()
-        else status.text = "مجوز Bluetooth برای اسکن لازم است"
+        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            requestAndStart()
+        } else {
+            status.text = "مجوز Bluetooth برای اسکن لازم است"
+        }
     }
 
     private fun startRadar() {
         running = true
+        status.text = "در حال شروع اسکن…"
         radar.start()
-        status.text = "در حال اسکن چنددستگاهی…"
     }
 
     private fun stopRadar() {
@@ -90,13 +119,13 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
     private fun render(items: List<DeviceObservation>) {
         if (items.isEmpty()) {
-            results.text = "هیچ دستگاه BLE قابل مشاهده‌ای پیدا نشد.\n\nاین سیستم فقط دستگاه‌هایی را می‌بیند که در آن لحظه سیگنال قابل اسکن دارند."
+            results.text = "هیچ دستگاه BLE قابل مشاهده‌ای پیدا نشد.\n\nفقط دستگاه‌هایی دیده می‌شوند که در آن لحظه سیگنال BLE قابل اسکن دارند."
             return
         }
         val phoneCandidates = items.count { it.phoneCandidateScore >= 50 }
         val text = buildString {
             append("${items.size} دستگاه در حال track | ${phoneCandidates} کاندید گوشی\n")
-            append("حداکثر tracker فعال: 64 دستگاه\n\n")
+            append("حداکثر tracker فعال: 128 دستگاه\n\n")
             items.take(20).forEachIndexed { index, item ->
                 val d = item.estimate
                 append("${index + 1}. ${item.displayLabel}\n")
@@ -113,7 +142,7 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun speakNearest(items: List<DeviceObservation>) {
-        val nearest = items.firstOrNull { it.phoneCandidateScore >= 50 } ?: items.firstOrNull() ?: return
+        val nearest = items.firstOrNull { it.phoneCandidateScore >= 50 } ?: return
         val d = nearest.estimate.meters ?: return
         if (nearest.estimate.confidence < 45) return
         val now = System.currentTimeMillis()
