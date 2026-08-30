@@ -14,11 +14,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * High-density BLE radar.
- *
- * The scanner can maintain many simultaneous tracks. The tracker itself is capped at 64
- * devices so a crowded scene does not cause unbounded memory/UI work. The UI receives a
- * throttled snapshot instead of one callback per radio advertisement.
+ * High-density BLE radar for crowded environments.
+ * Tracks up to 64 simultaneous ephemeral devices and emits throttled snapshots.
  */
 class BleRadar(
     context: Context,
@@ -42,7 +39,6 @@ class BleRadar(
         override fun onScanResult(callbackType: Int, result: ScanResult) = ingest(result)
         override fun onBatchScanResults(results: MutableList<ScanResult>) { results.forEach(::ingest) }
         override fun onScanFailed(errorCode: Int) {
-            // Keep the tracker alive; the next explicit start() retries the radio scan.
             running.set(false)
             handler.removeCallbacks(publishRunnable)
         }
@@ -55,11 +51,8 @@ class BleRadar(
         val builder = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .setReportDelay(0L)
-
-        // Use every LE PHY supported by the phone. This improves discovery in mixed
-        // 1M/2M/Coded-PHY environments where available.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder.setPhy(android.bluetooth.le.ScanSettings.PHY_LE_ALL_SUPPORTED)
+            builder.setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
         }
         s.startScan(null, builder.build(), callback)
         handler.post(publishRunnable)
@@ -79,45 +72,41 @@ class BleRadar(
 
     private fun ingest(result: ScanResult) {
         val ephemeral = sessionKey(result.device.address)
-        val name = result.device.name
-        val score = phoneCandidateScore(name, result)
         tracker.update(
             key = ephemeral,
             rssi = result.rssi,
             txPower = txPower(result),
-            name = name,
-            phoneScore = score
+            name = result.device.name,
+            phoneScore = phoneCandidateScore(result)
         )
     }
 
     private fun publishSnapshot() {
-        val list = tracker.snapshot()
-            .filter { it.phoneCandidateScore >= 50 }
-            .map {
-                DeviceObservation(
-                    key = it.key,
-                    displayLabel = it.displayLabel,
-                    rssi = it.rssi,
-                    txPower = it.txPower,
-                    firstSeenMs = it.firstSeenMs,
-                    lastSeenMs = it.lastSeenMs,
-                    samples = it.samples,
-                    phoneCandidateScore = it.phoneCandidateScore,
-                    estimate = it.estimate
-                )
-            }
+        // Do not discard low-confidence devices here: in a crowded street an unnamed phone
+        // is still a useful candidate. The score is exposed so the UI/voice layer can decide
+        // how aggressively to announce it.
+        val list = tracker.snapshot().map {
+            DeviceObservation(
+                key = it.key,
+                displayLabel = it.displayLabel,
+                rssi = it.rssi,
+                txPower = it.txPower,
+                firstSeenMs = it.firstSeenMs,
+                lastSeenMs = it.lastSeenMs,
+                samples = it.samples,
+                phoneCandidateScore = it.phoneCandidateScore,
+                estimate = it.estimate
+            )
+        }
         onUpdate(list)
     }
 
     private fun sessionKey(address: String): String =
         UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
 
-    /**
-     * A conservative phone-candidate score. It is deliberately not presented as proof that
-     * a device is a phone: BLE peripherals can advertise arbitrary names/manufacturer data.
-     */
-    private fun phoneCandidateScore(name: String?, result: ScanResult): Int {
-        val n = name?.lowercase().orEmpty()
+    /** Conservative heuristic only; BLE advertisements do not prove that a device is a phone. */
+    private fun phoneCandidateScore(result: ScanResult): Int {
+        val n = result.device.name?.lowercase().orEmpty()
         val hints = listOf(
             "iphone", "android", "pixel", "galaxy", "phone", "redmi", "xiaomi",
             "oneplus", "huawei", "oppo", "vivo", "motorola", "nothing", "samsung"
