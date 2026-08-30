@@ -11,12 +11,15 @@ android {
         applicationId = "com.iojh.blindphoneradar"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.1"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
         release {
+            // Release is optimized, but it must also be installable. Signing is supplied
+            // by the CI workflow with a dedicated CI key; a production Play key should be
+            // stored in GitHub Secrets before publishing to Google Play.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
