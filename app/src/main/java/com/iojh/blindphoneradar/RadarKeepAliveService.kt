@@ -8,8 +8,10 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 
-/** Keeps the radar process in the foreground while the user explicitly scans. */
+/** Owns the continuous BLE radar so scanning is not tied to Activity lifetime. */
 class RadarKeepAliveService : Service() {
+    private var radar: BleRadar? = null
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
@@ -19,14 +21,83 @@ class RadarKeepAliveService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else startForeground(NOTIFICATION_ID, notification)
+        } catch (t: Throwable) {
+            sendStatus("خطای شروع سرویس رادار: ${t.javaClass.simpleName}")
+            stopSelf()
+            return
         }
+
+        radar = BleRadar(
+            applicationContext,
+            onUpdate = { items -> broadcastSnapshot(items) },
+            onError = { message -> broadcastStatus(message) }
+        )
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopRadar()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_START || intent == null) {
+            try {
+                radar?.start()
+                broadcastStatus("● رادار فعال است — اسکن مداوم")
+            } catch (t: Throwable) {
+                broadcastStatus("شروع رادار ناموفق بود: ${t.javaClass.simpleName}")
+                stopSelf()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun stopRadar() {
+        try { radar?.stop() } catch (_: Throwable) {}
+        radar = null
+    }
+
+    private fun broadcastSnapshot(items: List<DeviceObservation>) {
+        val intent = Intent(ACTION_UPDATE).setPackage(packageName)
+        val encoded = ArrayList<String>(items.size)
+        items.forEach { item ->
+            val d = item.estimate
+            encoded.add(listOf(
+                item.key,
+                item.displayLabel,
+                item.rssi.toString(),
+                item.phoneCandidateScore.toString(),
+                item.lastSeenMs.toString(),
+                d.meters?.toString() ?: "",
+                d.minMeters.toString(),
+                d.maxMeters.toString(),
+                d.confidence.toString(),
+                d.method
+            ).joinToString("\t"))
+        }
+        intent.putStringArrayListExtra(EXTRA_ITEMS, encoded)
+        sendBroadcast(intent)
+    }
+
+    private fun broadcastStatus(message: String) = sendStatus(message)
+
+    private fun sendStatus(message: String) {
+        sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS, message))
+    }
+
+    override fun onDestroy() {
+        stopRadar()
+        super.onDestroy()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -38,6 +109,12 @@ class RadarKeepAliveService : Service() {
     }
 
     companion object {
+        const val ACTION_START = "com.iojh.blindphoneradar.START"
+        const val ACTION_STOP = "com.iojh.blindphoneradar.STOP"
+        const val ACTION_UPDATE = "com.iojh.blindphoneradar.UPDATE"
+        const val ACTION_STATUS = "com.iojh.blindphoneradar.STATUS"
+        const val EXTRA_ITEMS = "items"
+        const val EXTRA_STATUS = "status"
         const val CHANNEL_ID = "radar_scanning"
         const val NOTIFICATION_ID = 1001
     }
