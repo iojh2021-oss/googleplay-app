@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.widget.Button
@@ -85,7 +86,8 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
         try {
             if (!adapter.isEnabled) {
-                startActivity(Intent(BluetoothManager.ACTION_REQUEST_ENABLE))
+                // ACTION_REQUEST_ENABLE belongs to BluetoothAdapter, not BluetoothManager.
+                startActivityForResult(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE), 101)
                 status.text = "Bluetooth را روشن کنید"
                 return
             }
@@ -94,6 +96,19 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
             return
         }
         startRadar()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 101) {
+            val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
+            try {
+                if (manager?.adapter?.isEnabled == true) startRadar()
+                else status.text = "Bluetooth روشن نشد؛ برای شروع اسکن آن را فعال کنید"
+            } catch (_: SecurityException) {
+                status.text = "مجوز دسترسی به Bluetooth کافی نیست"
+            }
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -106,9 +121,14 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun startRadar() {
-        running = true
-        status.text = "در حال شروع اسکن…"
-        radar.start()
+        try {
+            running = true
+            status.text = "در حال شروع اسکن…"
+            radar.start()
+        } catch (t: Throwable) {
+            running = false
+            status.text = "شروع اسکن ناموفق بود: ${t.javaClass.simpleName}"
+        }
     }
 
     private fun stopRadar() {
