@@ -1,7 +1,6 @@
 package com.iojh.blindphoneradar
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -28,12 +27,8 @@ class BleRadar(context: Context, private val onUpdate: (List<DeviceObservation>)
     )
 
     private val callback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            ingest(result)
-        }
-        override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach(::ingest)
-        }
+        override fun onScanResult(callbackType: Int, result: ScanResult) = ingest(result)
+        override fun onBatchScanResults(results: MutableList<ScanResult>) { results.forEach(::ingest) }
     }
 
     @SuppressLint("MissingPermission")
@@ -47,22 +42,15 @@ class BleRadar(context: Context, private val onUpdate: (List<DeviceObservation>)
     }
 
     @SuppressLint("MissingPermission")
-    fun stop() {
-        scanner?.stopScan(callback)
-    }
+    fun stop() { scanner?.stopScan(callback) }
 
-    fun clear() {
-        observations.clear()
-        onUpdate(emptyList())
-    }
+    fun clear() { observations.clear(); onUpdate(emptyList()) }
 
     private fun ingest(result: ScanResult) {
-        val device = result.device
-        // Do not retain the real MAC address. Hash only in RAM for this session.
-        val ephemeral = sessionKey(device.address)
+        val ephemeral = sessionKey(result.device.address)
         val now = SystemClock.elapsedRealtime()
         val item = observations.computeIfAbsent(ephemeral) {
-            MutableObservation(ephemeral, now, now, result.rssi, txPower(result), device.name)
+            MutableObservation(ephemeral, now, now, result.rssi, txPower(result), result.device.name)
         }
         synchronized(item) {
             item.lastSeenMs = now
@@ -76,34 +64,21 @@ class BleRadar(context: Context, private val onUpdate: (List<DeviceObservation>)
         publish()
     }
 
-    private fun prune(now: Long) {
-        observations.entries.removeIf { now - it.value.lastSeenMs > 8_000L }
-    }
+    private fun prune(now: Long) { observations.entries.removeIf { now - it.value.lastSeenMs > 8_000L } }
 
     private fun publish() {
         val list = observations.values.map { item ->
             val samples = synchronized(item) { item.samples.toList() }
             val estimate = DistanceEstimator.estimate(samples, item.txPower)
             val score = phoneCandidateScore(item.name)
-            DeviceObservation(
-                key = item.key,
-                displayLabel = if (score >= 50) "Phone candidate" else "BLE device",
-                rssi = item.rssi,
-                txPower = item.txPower,
-                firstSeenMs = item.firstSeenMs,
-                lastSeenMs = item.lastSeenMs,
-                samples = samples,
-                phoneCandidateScore = score,
-                estimate = estimate
-            )
+            DeviceObservation(item.key, if (score >= 50) "Phone candidate" else "BLE device", item.rssi,
+                item.txPower, item.firstSeenMs, item.lastSeenMs, samples, score, estimate)
         }.sortedWith(compareBy<DeviceObservation> { it.estimate.meters ?: Double.MAX_VALUE }.thenByDescending { it.rssi })
         onUpdate(list)
     }
 
-    private fun sessionKey(address: String): String {
-        // Per-installation/per-process random namespace: not suitable for tracking a person.
-        return UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
-    }
+    private fun sessionKey(address: String): String =
+        UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
 
     private fun phoneCandidateScore(name: String?): Int {
         val n = name?.lowercase() ?: return 20
@@ -112,9 +87,8 @@ class BleRadar(context: Context, private val onUpdate: (List<DeviceObservation>)
     }
 
     @SuppressLint("MissingPermission")
-    private fun txPower(result: ScanResult): Int? = if (android.os.Build.VERSION.SDK_INT >= 33) result.txPower.takeIf { it != ScanResult.TX_POWER_NO_PREFERENCE } else null
+    private fun txPower(result: ScanResult): Int? =
+        if (android.os.Build.VERSION.SDK_INT >= 33) result.txPower.takeIf { it in -100..20 } else null
 
-    companion object {
-        private val sessionSalt = UUID.randomUUID().toString()
-    }
+    companion object { private val sessionSalt = UUID.randomUUID().toString() }
 }
