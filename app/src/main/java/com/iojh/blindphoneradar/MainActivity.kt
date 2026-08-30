@@ -1,9 +1,16 @@
 package com.iojh.blindphoneradar
 
 import android.Manifest
+import android.app.Activity
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
@@ -14,87 +21,128 @@ import android.widget.ScrollView
 import android.widget.TextView
 import java.util.Locale
 
-class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
+class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private lateinit var status: TextView
     private lateinit var results: TextView
     private lateinit var cellular: TextView
-    private lateinit var radar: BleRadar
+    private lateinit var map: RadarMapView
     private lateinit var tts: TextToSpeech
+    private lateinit var locationManager: LocationManager
     private var running = false
+    private var lastItems: List<DeviceObservation> = emptyList()
+    private var latitude: Double? = null
+    private var longitude: Double? = null
     private var lastSpokenKey = ""
     private var lastSpokenAt = 0L
+    private var receiverRegistered = false
+
+    private val radarReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                RadarKeepAliveService.ACTION_UPDATE -> {
+                    val encoded = intent.getStringArrayListExtra(RadarKeepAliveService.EXTRA_ITEMS) ?: arrayListOf()
+                    val items = encoded.mapNotNull(::decodeObservation)
+                    lastItems = items
+                    running = true
+                    status.text = "● رادار فعال است — ${items.size} دستگاه در tracker"
+                    render(items)
+                }
+                RadarKeepAliveService.ACTION_STATUS -> {
+                    status.text = intent.getStringExtra(RadarKeepAliveService.EXTRA_STATUS) ?: "وضعیت نامشخص"
+                }
+            }
+        }
+    }
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            latitude = location.latitude
+            longitude = location.longitude
+            map.setData(lastItems, latitude, longitude)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "Blind Phone Radar"
         tts = TextToSpeech(this, this)
+        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         buildUi()
-        radar = BleRadar(
-            this,
-            onUpdate = { observations -> runOnUiThread { render(observations) } },
-            onError = { message -> runOnUiThread {
-                running = false
-                status.text = message
-                stopRadarKeepAlive()
-            } }
-        )
+    }
+
+    override fun onStart() {
+        super.onStart()
+        registerRadarReceiver()
+        requestLocationUpdatesIfAllowed()
+    }
+
+    override fun onStop() {
+        unregisterRadarReceiver()
+        try { locationManager.removeUpdates(locationListener) } catch (_: Throwable) {}
+        super.onStop()
     }
 
     private fun buildUi() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
+            setPadding(20, 20, 20, 20)
             gravity = Gravity.CENTER_HORIZONTAL
         }
         status = TextView(this).apply { textSize = 20f; text = "آماده رادار" }
         val start = Button(this).apply { text = "▶ شروع رادار"; setOnClickListener { toggle() } }
-        val clear = Button(this).apply { text = "پاک‌سازی حافظه موقت"; setOnClickListener { radar.clear(); results.text = "" } }
         val cellButton = Button(this).apply { text = "بررسی شبکه سیم‌کارت"; setOnClickListener { readCellular() } }
+        val clear = Button(this).apply { text = "پاک‌سازی tracker موقت"; setOnClickListener { lastItems = emptyList(); map.setData(emptyList(), latitude, longitude); results.text = "" } }
         val capabilities = TextView(this).apply {
             textSize = 14f
             text = CapabilityProbe(this@MainActivity).summary()
-            setPadding(0, 12, 0, 12)
+            setPadding(0, 8, 0, 8)
         }
         cellular = TextView(this).apply {
             textSize = 13f
-            text = "شبکه سیم‌کارت: برای بررسی دکل‌های قابل مشاهده دکمه بالا را بزنید"
-            setPadding(0, 8, 0, 8)
+            text = "شبکه سیم‌کارت: اطلاعات دکل خود این گوشی است، نه فاصله گوشی‌های اطراف"
         }
-        results = TextView(this).apply { textSize = 18f; setPadding(0, 16, 0, 16) }
+        map = RadarMapView(this)
+        results = TextView(this).apply { textSize = 17f; setPadding(0, 12, 0, 12) }
+
         root.addView(status)
         root.addView(capabilities)
         root.addView(start)
         root.addView(cellButton)
         root.addView(clear)
+        root.addView(map, LinearLayout.LayoutParams(-1, 0, 1.3f))
         root.addView(cellular)
-        root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 0.9f))
         setContentView(root)
     }
 
-    private fun toggle() { if (running) stopRadar() else requestAndStart() }
+    private fun toggle() {
+        if (running) stopRadar() else requestAndStart()
+    }
 
     private fun requestAndStart() {
         val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
-        val adapter = manager?.adapter
-        if (adapter == null) { status.text = "Bluetooth روی این گوشی وجود ندارد"; return }
+        val adapter = try { manager?.adapter } catch (_: SecurityException) { null }
+        if (adapter == null) { status.text = "Bluetooth روی این گوشی در دسترس نیست"; return }
 
+        val missing = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 31) {
-            val missing = listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-                .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-            if (missing.isNotEmpty()) { requestPermissions(missing.toTypedArray(), 100); return }
-        } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 100)
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) missing += Manifest.permission.BLUETOOTH_SCAN
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) missing += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) missing += Manifest.permission.ACCESS_FINE_LOCATION
+        if (missing.isNotEmpty()) {
+            requestPermissions(missing.distinct().toTypedArray(), REQUEST_RADAR_PERMISSIONS)
             return
         }
 
         try {
             if (!adapter.isEnabled) {
-                startActivityForResult(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE), 101)
+                startActivityForResult(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE), REQUEST_ENABLE_BT)
                 status.text = "Bluetooth را روشن کنید"
                 return
             }
         } catch (_: SecurityException) {
-            status.text = "مجوز دسترسی به وضعیت Bluetooth کافی نیست"
+            status.text = "مجوز Bluetooth کافی نیست"
             return
         }
         startRadar()
@@ -102,88 +150,116 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 101) {
-            val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
-            try {
-                if (manager?.adapter?.isEnabled == true) startRadar()
-                else status.text = "Bluetooth روشن نشد"
-            } catch (_: SecurityException) { status.text = "مجوز دسترسی به Bluetooth کافی نیست" }
+        if (requestCode == REQUEST_ENABLE_BT) {
+            requestAndStart()
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100) {
+        if (requestCode == REQUEST_RADAR_PERMISSIONS) {
             if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) requestAndStart()
-            else status.text = "مجوز Bluetooth برای شروع رادار لازم است"
-        } else if (requestCode == 200) {
-            readCellular()
-        }
+            else status.text = "برای رادار واقعی، Bluetooth و موقعیت مکانی لازم است"
+        } else if (requestCode == REQUEST_CELLULAR_PERMISSION) readCellular()
     }
 
     private fun startRadar() {
         try {
+            val intent = Intent(this, RadarKeepAliveService::class.java).setAction(RadarKeepAliveService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
             running = true
-            status.text = "● رادار فعال است — اسکن مداوم تا زدن توقف"
-            startRadarKeepAlive()
-            radar.start()
+            status.text = "● رادار فعال شد — تا توقف دستی ادامه دارد"
+            requestLocationUpdatesIfAllowed()
         } catch (t: Throwable) {
             running = false
-            stopRadarKeepAlive()
             status.text = "شروع رادار ناموفق بود: ${t.javaClass.simpleName}"
         }
     }
 
     private fun stopRadar() {
         running = false
-        radar.stop()
-        stopRadarKeepAlive()
+        try {
+            startService(Intent(this, RadarKeepAliveService::class.java).setAction(RadarKeepAliveService.ACTION_STOP))
+        } catch (_: Throwable) {}
         status.text = "■ رادار متوقف شد"
     }
 
-    private fun startRadarKeepAlive() {
-        try {
-            val intent = Intent(this, RadarKeepAliveService::class.java)
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
-        } catch (t: Throwable) {
-            status.text = "رادار شروع شد؛ سرویس پس‌زمینه فعال نشد: ${t.javaClass.simpleName}"
+    private fun registerRadarReceiver() {
+        if (receiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(RadarKeepAliveService.ACTION_UPDATE)
+            addAction(RadarKeepAliveService.ACTION_STATUS)
         }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(radarReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else registerReceiver(radarReceiver, filter)
+        receiverRegistered = true
     }
 
-    private fun stopRadarKeepAlive() {
-        try { stopService(Intent(this, RadarKeepAliveService::class.java)) } catch (_: Throwable) {}
+    private fun unregisterRadarReceiver() {
+        if (!receiverRegistered) return
+        try { unregisterReceiver(radarReceiver) } catch (_: Throwable) {}
+        receiverRegistered = false
+    }
+
+    private fun requestLocationUpdatesIfAllowed() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, locationListener)
+                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let(locationListener::onLocationChanged)
+            }
+        } catch (_: SecurityException) {}
     }
 
     private fun readCellular() {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 200)
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_CELLULAR_PERMISSION)
             return
         }
         cellular.text = CellularDiagnostics(this).read().summary
     }
 
     private fun render(items: List<DeviceObservation>) {
+        map.setData(items, latitude, longitude)
         if (items.isEmpty()) {
-            results.text = "در این لحظه تبلیغ BLE قابل مشاهده‌ای پیدا نشده است.\n\nاین به معنی نبودن گوشی در اطراف نیست؛ گوشی مقابل باید یک BLE advertisement قابل دریافت ارسال کند."
+            results.text = "در این لحظه BLE advertisement قابل مشاهده‌ای نیست.\nاین به معنی نبودن گوشی در اطراف نیست؛ دستگاه مقابل باید رادیوی BLE قابل مشاهده داشته باشد."
             return
         }
         val phoneCandidates = items.count { it.phoneCandidateScore >= 50 }
-        val text = buildString {
-            append("${items.size} دستگاه در حال track | ${phoneCandidates} کاندید گوشی\n")
-            append("رادار: اسکن پیوسته | حداکثر tracker: 128\n\n")
-            items.take(20).forEachIndexed { index, item ->
+        results.text = buildString {
+            append("${items.size} دستگاه track موقت | ${phoneCandidates} کاندید گوشی\n")
+            append("اسکن: پیوسته | سقف tracker: 128 | داده دائمی: خیر\n\n")
+            items.take(30).forEachIndexed { index, item ->
                 val d = item.estimate
                 append("${index + 1}. ${item.displayLabel}\n")
-                if (d.meters != null) {
-                    append("   حدود %.1f m | بازه %.1f–%.1f m\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
-                    append("   اطمینان ${d.confidence}% | RSSI ${item.rssi}\n")
-                } else append("   فاصله نامشخص | RSSI ${item.rssi}\n")
-                append("   امتیاز گوشی ${item.phoneCandidateScore}%\n\n")
+                if (d.meters != null) append("   حدود %.1f m | بازه %.1f–%.1f m | اطمینان ${d.confidence}%\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
+                else append("   فاصله نامشخص\n")
+                append("   RSSI ${item.rssi} | امتیاز گوشی ${item.phoneCandidateScore}% | ${d.method}\n\n")
             }
-            if (items.size > 20) append("… و ${items.size - 20} دستگاه دیگر در tracker فعال هستند.\n")
         }
-        results.text = text
         speakNearest(items)
+    }
+
+    private fun decodeObservation(value: String): DeviceObservation? {
+        val p = value.split('\t')
+        if (p.size < 10) return null
+        return try {
+            val meters = p[5].takeIf { it.isNotEmpty() }?.toDouble()
+            DeviceObservation(
+                key = p[0],
+                displayLabel = p[1],
+                rssi = p[2].toInt(),
+                estimate = DistanceEstimate(
+                    meters = meters,
+                    minMeters = p[6].toDouble(),
+                    maxMeters = p[7].toDouble(),
+                    confidence = p[8].toInt(),
+                    method = p[9]
+                ),
+                phoneCandidateScore = p[3].toInt(),
+                lastSeenMs = p[4].toLong()
+            )
+        } catch (_: Throwable) { null }
     }
 
     private fun speakNearest(items: List<DeviceObservation>) {
@@ -191,16 +267,16 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
         val d = nearest.estimate.meters ?: return
         if (nearest.estimate.confidence < 45) return
         val now = System.currentTimeMillis()
-        val roundedBand = when {
+        val band = when {
             d < 1.0 -> "کمتر از یک متر"
             d < 2.0 -> "حدود یک تا دو متر"
             d < 3.5 -> "حدود دو تا سه متر"
             d < 5.5 -> "حدود چهار تا پنج متر"
             else -> "بیش از پنج متر"
         }
-        val key = "${nearest.key}:$roundedBand"
+        val key = "${nearest.key}:$band"
         if (key != lastSpokenKey || now - lastSpokenAt > 5000L) {
-            tts.speak("نزدیک‌ترین گوشی احتمالی، $roundedBand", TextToSpeech.QUEUE_FLUSH, null, "nearest")
+            tts.speak("نزدیک‌ترین گوشی احتمالی، $band", TextToSpeech.QUEUE_FLUSH, null, "nearest")
             lastSpokenKey = key
             lastSpokenAt = now
         }
@@ -211,9 +287,13 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
-        if (::radar.isInitialized) radar.stop()
-        stopRadarKeepAlive()
-        if (::tts.isInitialized) { tts.stop(); tts.shutdown() }
+        try { tts.stop(); tts.shutdown() } catch (_: Throwable) {}
         super.onDestroy()
+    }
+
+    companion object {
+        private const val REQUEST_RADAR_PERMISSIONS = 100
+        private const val REQUEST_ENABLE_BT = 101
+        private const val REQUEST_CELLULAR_PERMISSION = 200
     }
 }
