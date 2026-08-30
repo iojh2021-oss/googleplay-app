@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -33,9 +33,40 @@ jobs:
       - name: Build release APK
         run: gradle assembleRelease --no-daemon
 
+      - name: Sign release APK for install/testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/blind-phone-radar-ci.jks"
+          UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED="$RUNNER_TEMP/app-release-aligned.apk"
+          SIGNED="app/build/outputs/apk/release/blind-phone-radar-release.apk"
+          keytool -genkeypair -v \
+            -keystore "$KEYSTORE" \
+            -storepass changeit \
+            -keypass changeit \
+            -alias blind-phone-radar-ci \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -dname "CN=Blind Phone Radar CI,O=iojh2021-oss" \
+            -noprompt
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-pass pass:changeit \
+            --key-pass pass:changeit \
+            --ks-key-alias blind-phone-radar-ci \
+            --out "$SIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" verify --verbose "$SIGNED"
+          rm -f "$UNSIGNED"
+
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: blind-phone-radar-apks
-          path: app/build/outputs/apk/**/*.apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/blind-phone-radar-release.apk
           if-no-files-found: error
