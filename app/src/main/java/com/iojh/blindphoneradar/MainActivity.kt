@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.widget.Button
@@ -18,6 +17,7 @@ import java.util.Locale
 class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     private lateinit var status: TextView
     private lateinit var results: TextView
+    private lateinit var cellular: TextView
     private lateinit var radar: BleRadar
     private lateinit var tts: TextToSpeech
     private var running = false
@@ -35,6 +35,7 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
             onError = { message -> runOnUiThread {
                 running = false
                 status.text = message
+                stopRadarKeepAlive()
             } }
         )
     }
@@ -45,19 +46,27 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
             setPadding(32, 32, 32, 32)
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        status = TextView(this).apply { textSize = 20f; text = "آماده اسکن" }
-        val start = Button(this).apply { text = "شروع تشخیص گوشی‌های اطراف"; setOnClickListener { toggle() } }
+        status = TextView(this).apply { textSize = 20f; text = "آماده رادار" }
+        val start = Button(this).apply { text = "▶ شروع رادار"; setOnClickListener { toggle() } }
         val clear = Button(this).apply { text = "پاک‌سازی حافظه موقت"; setOnClickListener { radar.clear(); results.text = "" } }
+        val cellButton = Button(this).apply { text = "بررسی شبکه سیم‌کارت"; setOnClickListener { readCellular() } }
         val capabilities = TextView(this).apply {
             textSize = 14f
             text = CapabilityProbe(this@MainActivity).summary()
             setPadding(0, 12, 0, 12)
         }
+        cellular = TextView(this).apply {
+            textSize = 13f
+            text = "شبکه سیم‌کارت: برای بررسی دکل‌های قابل مشاهده دکمه بالا را بزنید"
+            setPadding(0, 8, 0, 8)
+        }
         results = TextView(this).apply { textSize = 18f; setPadding(0, 16, 0, 16) }
         root.addView(status)
         root.addView(capabilities)
         root.addView(start)
+        root.addView(cellButton)
         root.addView(clear)
+        root.addView(cellular)
         root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
     }
@@ -67,18 +76,12 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     private fun requestAndStart() {
         val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter = manager?.adapter
-        if (adapter == null) {
-            status.text = "Bluetooth روی این گوشی وجود ندارد"
-            return
-        }
+        if (adapter == null) { status.text = "Bluetooth روی این گوشی وجود ندارد"; return }
 
         if (Build.VERSION.SDK_INT >= 31) {
             val missing = listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
                 .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-            if (missing.isNotEmpty()) {
-                requestPermissions(missing.toTypedArray(), 100)
-                return
-            }
+            if (missing.isNotEmpty()) { requestPermissions(missing.toTypedArray(), 100); return }
         } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 100)
             return
@@ -86,7 +89,6 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
         try {
             if (!adapter.isEnabled) {
-                // ACTION_REQUEST_ENABLE belongs to BluetoothAdapter, not BluetoothManager.
                 startActivityForResult(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE), 101)
                 status.text = "Bluetooth را روشن کنید"
                 return
@@ -104,48 +106,71 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
             val manager = getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager
             try {
                 if (manager?.adapter?.isEnabled == true) startRadar()
-                else status.text = "Bluetooth روشن نشد؛ برای شروع اسکن آن را فعال کنید"
-            } catch (_: SecurityException) {
-                status.text = "مجوز دسترسی به Bluetooth کافی نیست"
-            }
+                else status.text = "Bluetooth روشن نشد"
+            } catch (_: SecurityException) { status.text = "مجوز دسترسی به Bluetooth کافی نیست" }
         }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100 && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-            requestAndStart()
-        } else {
-            status.text = "مجوز Bluetooth برای اسکن لازم است"
+        if (requestCode == 100) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) requestAndStart()
+            else status.text = "مجوز Bluetooth برای شروع رادار لازم است"
+        } else if (requestCode == 200) {
+            readCellular()
         }
     }
 
     private fun startRadar() {
         try {
             running = true
-            status.text = "در حال شروع اسکن…"
+            status.text = "● رادار فعال است — اسکن مداوم تا زدن توقف"
+            startRadarKeepAlive()
             radar.start()
         } catch (t: Throwable) {
             running = false
-            status.text = "شروع اسکن ناموفق بود: ${t.javaClass.simpleName}"
+            stopRadarKeepAlive()
+            status.text = "شروع رادار ناموفق بود: ${t.javaClass.simpleName}"
         }
     }
 
     private fun stopRadar() {
         running = false
         radar.stop()
-        status.text = "اسکن متوقف شد"
+        stopRadarKeepAlive()
+        status.text = "■ رادار متوقف شد"
+    }
+
+    private fun startRadarKeepAlive() {
+        try {
+            val intent = Intent(this, RadarKeepAliveService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+        } catch (t: Throwable) {
+            status.text = "رادار شروع شد؛ سرویس پس‌زمینه فعال نشد: ${t.javaClass.simpleName}"
+        }
+    }
+
+    private fun stopRadarKeepAlive() {
+        try { stopService(Intent(this, RadarKeepAliveService::class.java)) } catch (_: Throwable) {}
+    }
+
+    private fun readCellular() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 200)
+            return
+        }
+        cellular.text = CellularDiagnostics(this).read().summary
     }
 
     private fun render(items: List<DeviceObservation>) {
         if (items.isEmpty()) {
-            results.text = "هیچ دستگاه BLE قابل مشاهده‌ای پیدا نشد.\n\nفقط دستگاه‌هایی دیده می‌شوند که در آن لحظه سیگنال BLE قابل اسکن دارند."
+            results.text = "در این لحظه تبلیغ BLE قابل مشاهده‌ای پیدا نشده است.\n\nاین به معنی نبودن گوشی در اطراف نیست؛ گوشی مقابل باید یک BLE advertisement قابل دریافت ارسال کند."
             return
         }
         val phoneCandidates = items.count { it.phoneCandidateScore >= 50 }
         val text = buildString {
             append("${items.size} دستگاه در حال track | ${phoneCandidates} کاندید گوشی\n")
-            append("حداکثر tracker فعال: 128 دستگاه\n\n")
+            append("رادار: اسکن پیوسته | حداکثر tracker: 128\n\n")
             items.take(20).forEachIndexed { index, item ->
                 val d = item.estimate
                 append("${index + 1}. ${item.displayLabel}\n")
@@ -187,6 +212,7 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         if (::radar.isInitialized) radar.stop()
+        stopRadarKeepAlive()
         if (::tts.isInitialized) { tts.stop(); tts.shutdown() }
         super.onDestroy()
     }
