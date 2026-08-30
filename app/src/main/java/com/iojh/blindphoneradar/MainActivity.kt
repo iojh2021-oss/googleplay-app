@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
-import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -80,7 +79,7 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
     private fun startRadar() {
         running = true
         radar.start()
-        status.text = "در حال اسکن…"
+        status.text = "در حال اسکن چنددستگاهی…"
     }
 
     private fun stopRadar() {
@@ -91,27 +90,30 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
 
     private fun render(items: List<DeviceObservation>) {
         if (items.isEmpty()) {
-            results.text = "هیچ دستگاه BLE قابل مشاهده‌ای پیدا نشد.\n\nتوجه: این نسخه فقط دستگاه‌های رادیویی قابل مشاهده را می‌بیند؛ هر گوشی الزاماً BLE قابل اسکن منتشر نمی‌کند."
+            results.text = "هیچ دستگاه BLE قابل مشاهده‌ای پیدا نشد.\n\nاین سیستم فقط دستگاه‌هایی را می‌بیند که در آن لحظه سیگنال قابل اسکن دارند."
             return
         }
+        val phoneCandidates = items.count { it.phoneCandidateScore >= 50 }
         val text = buildString {
-            append("${items.size} دستگاه قابل مشاهده\n\n")
-            items.take(12).forEachIndexed { index, item ->
+            append("${items.size} دستگاه در حال track | ${phoneCandidates} کاندید گوشی\n")
+            append("حداکثر tracker فعال: 64 دستگاه\n\n")
+            items.take(20).forEachIndexed { index, item ->
                 val d = item.estimate
                 append("${index + 1}. ${item.displayLabel}\n")
                 if (d.meters != null) {
-                    append("   حدود %.1f m  | بازه %.1f–%.1f m\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
+                    append("   حدود %.1f m | بازه %.1f–%.1f m\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
                     append("   اطمینان ${d.confidence}% | RSSI ${item.rssi}\n")
                 } else append("   فاصله نامشخص | RSSI ${item.rssi}\n")
-                append("   شناسه موقت: ${item.key}\n\n")
+                append("   امتیاز گوشی ${item.phoneCandidateScore}%\n\n")
             }
+            if (items.size > 20) append("… و ${items.size - 20} دستگاه دیگر در tracker فعال هستند.\n")
         }
         results.text = text
         speakNearest(items)
     }
 
     private fun speakNearest(items: List<DeviceObservation>) {
-        val nearest = items.firstOrNull() ?: return
+        val nearest = items.firstOrNull { it.phoneCandidateScore >= 50 } ?: items.firstOrNull() ?: return
         val d = nearest.estimate.meters ?: return
         if (nearest.estimate.confidence < 45) return
         val now = System.currentTimeMillis()
@@ -124,7 +126,7 @@ class MainActivity : android.app.Activity(), TextToSpeech.OnInitListener {
         }
         val key = "${nearest.key}:$roundedBand"
         if (key != lastSpokenKey || now - lastSpokenAt > 5000L) {
-            tts.speak("نزدیک‌ترین دستگاه، $roundedBand", TextToSpeech.QUEUE_FLUSH, null, "nearest")
+            tts.speak("نزدیک‌ترین گوشی احتمالی، $roundedBand", TextToSpeech.QUEUE_FLUSH, null, "nearest")
             lastSpokenKey = key
             lastSpokenAt = now
         }
