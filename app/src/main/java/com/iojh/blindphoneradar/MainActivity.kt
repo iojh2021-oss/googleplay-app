@@ -8,6 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -21,13 +25,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 import java.util.Locale
 
-class MainActivity : Activity(), TextToSpeech.OnInitListener {
+class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListener {
     private lateinit var status: TextView
     private lateinit var results: TextView
     private lateinit var cellular: TextView
     private lateinit var map: RadarMapView
     private lateinit var tts: TextToSpeech
     private lateinit var locationManager: LocationManager
+    private lateinit var sensorManager: SensorManager
+    private var rotationSensor: Sensor? = null
     private var running = false
     private var lastItems: List<DeviceObservation> = emptyList()
     private var latitude: Double? = null
@@ -67,6 +73,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         title = "Blind Phone Radar"
         tts = TextToSpeech(this, this)
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         buildUi()
     }
 
@@ -74,11 +82,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onStart()
         registerRadarReceiver()
         requestLocationUpdatesIfAllowed()
+        rotationSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
 
     override fun onStop() {
         unregisterRadarReceiver()
         try { locationManager.removeUpdates(locationListener) } catch (_: Throwable) {}
+        sensorManager.unregisterListener(this)
         super.onStop()
     }
 
@@ -290,6 +300,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         try { tts.stop(); tts.shutdown() } catch (_: Throwable) {}
         super.onDestroy()
     }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+        val rotationMatrix = FloatArray(9)
+        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+        val orientation = FloatArray(3)
+        SensorManager.getOrientation(rotationMatrix, orientation)
+        val azimuth = (Math.toDegrees(orientation[0].toDouble()).toFloat() + 360f) % 360f
+        map.setHeading(azimuth)
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     companion object {
         private const val REQUEST_RADAR_PERMISSIONS = 100
