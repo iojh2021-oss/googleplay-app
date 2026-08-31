@@ -164,10 +164,19 @@ class BleRadar(
         UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
 
     private fun phoneCandidateScore(result: ScanResult): Int {
-        val record = result.scanRecord ?: return 25
-        var score = 30
+        val record = result.scanRecord ?: return 20
+        var score = 25
+        val mfg = record.manufacturerSpecificData
+        // Known phone-class background broadcasters: Apple Continuity, Google
+        // Fast Pair, Microsoft Swift Pair, Samsung. These run as OS-level
+        // services on real phones, not something a random BLE accessory sends.
+        val knownPhoneVendors = setOf(0x004C, 0x00E0, 0x0006, 0x0075)
+        for (i in 0 until mfg.size()) {
+            val id = mfg.keyAt(i)
+            if (id in knownPhoneVendors) { score += 40; break }
+        }
         if (record.serviceUuids?.isNotEmpty() == true) score += 5
-        if (record.manufacturerSpecificData.size() > 0) score += 5
+        if (mfg.size() > 0) score += 5
         return score.coerceIn(0, 95)
     }
 
