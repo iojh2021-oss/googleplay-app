@@ -97,6 +97,11 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         invalidate()
     }
 
+    fun recenterAndZoom() {
+        val point = userPoint ?: return
+        controller.animateTo(point, 19.0, 600L)
+    }
+
     /** Stable pseudo-angle derived from the device key so a given phone
      *  keeps the same on-screen position across redraws (cosmetic layout
      *  only — not a real compass bearing). */
@@ -106,9 +111,19 @@ class OsmRadarMapView(context: Context) : MapView(context) {
     }
 
     private fun drawUserMarker(canvas: Canvas, cx: Float, cy: Float, heading: Float) {
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.parseColor("#33000000")
+        }
+        canvas.drawOval(RectF(cx - 16f, cy + 20f, cx + 16f, cy + 28f), shadowPaint)
+
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            color = Color.parseColor("#1E6FE0")
+            shader = android.graphics.RadialGradient(
+                cx, cy - 26f, 26f,
+                Color.parseColor("#4C8CF0"), Color.parseColor("#1552B8"),
+                android.graphics.Shader.TileMode.CLAMP
+            )
         }
         val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -147,13 +162,27 @@ class OsmRadarMapView(context: Context) : MapView(context) {
     }
 
     private fun drawPhoneMarker(canvas: Canvas, x: Float, y: Float, phoneColor: Int) {
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.parseColor("#2A000000")
+        }
+        canvas.drawOval(RectF(x - 10f, y + 13f, x + 10f, y + 19f), shadowPaint)
+
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            color = Color.parseColor("#2A2A2A")
+            shader = android.graphics.LinearGradient(
+                x - 9f, y - 15f, x + 9f, y + 15f,
+                Color.parseColor("#4A4A4A"), Color.parseColor("#141414"),
+                android.graphics.Shader.TileMode.CLAMP
+            )
         }
         val screenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            color = phoneColor
+            shader = android.graphics.LinearGradient(
+                x - 6f, y - 11f, x + 6f, y + 8f,
+                lighten(phoneColor), phoneColor,
+                android.graphics.Shader.TileMode.CLAMP
+            )
         }
         val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -165,6 +194,13 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         canvas.drawRoundRect(phoneRect, 5f, 5f, outlinePaint)
         val screenRect = RectF(x - 6f, y - 11f, x + 6f, y + 8f)
         canvas.drawRect(screenRect, screenPaint)
+    }
+
+    private fun lighten(color: Int): Int {
+        val r = (Color.red(color) + (255 - Color.red(color)) / 2)
+        val g = (Color.green(color) + (255 - Color.green(color)) / 2)
+        val b = (Color.blue(color) + (255 - Color.blue(color)) / 2)
+        return Color.rgb(r, g, b)
     }
 
     private fun drawDistanceLabel(canvas: Canvas, x: Float, y: Float, meters: Double) {

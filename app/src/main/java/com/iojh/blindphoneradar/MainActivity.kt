@@ -157,8 +157,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         })
 
         val locateButton = circularButton("◎") {
-            val lat = latitude; val lon = longitude
-            if (lat != null && lon != null) map.setUserLocation(lat, lon, true)
+            map.recenterAndZoom()
         }
         root.addView(locateButton, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
             gravity = Gravity.BOTTOM or Gravity.END
