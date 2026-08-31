@@ -111,6 +111,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             text = "آماده رادار"
             background = pillDrawable(Color.WHITE)
             elevation = 14f
+            setOnClickListener { showDeviceDetailsDialog() }
         }
         root.addView(status, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -216,6 +217,27 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         }
         elevation = 14f
         setOnClickListener { onClick() }
+    }
+
+    private fun showDeviceDetailsDialog() {
+        val message = if (lastItems.isEmpty()) {
+            "هنوز دستگاهی شناسایی نشده است."
+        } else {
+            buildString {
+                lastItems.take(30).forEachIndexed { index, item ->
+                    val d = item.estimate
+                    append("${index + 1}. ${item.displayLabel}\n")
+                    if (d.meters != null) append("   فاصله تقریبی: %.1f m (اطمینان ${d.confidence}%%)\n".format(Locale.US, d.meters))
+                    else append("   فاصله نامشخص\n")
+                    append("\n")
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("دستگاه\u200cهای شناسایی\u200cشده")
+            .setMessage(message)
+            .setPositiveButton("باشه", null)
+            .show()
     }
 
     private fun showCapabilitiesDialog() {

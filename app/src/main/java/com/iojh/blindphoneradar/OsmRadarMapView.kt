@@ -4,44 +4,71 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
-import org.osmdroid.views.overlay.Polygon
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Real street map (OpenStreetMap tiles, no API key required). Shows the
- * user's live GPS position. BLE targets are drawn as distance-ring
- * polygons around the user (not a fabricated point on the map) because
- * RSSI does not provide a real bearing.
+ * user's live GPS position as a person marker with a heading arrow.
+ * BLE targets are drawn as phone icons placed on their distance ring at a
+ * stable (device-id-based) angle — not a real bearing, since RSSI alone
+ * cannot provide direction — each with a permanent label showing the
+ * approximate distance.
  */
 class OsmRadarMapView(context: Context) : MapView(context) {
     private var userPoint: GeoPoint? = null
     private var targets: List<DeviceObservation> = emptyList()
-    private val ringOverlay = object : Overlay() {
+    private var headingDeg: Float = 0f
+
+    private val ringPaintCache = HashMap<Int, Paint>()
+
+    private val radarOverlay = object : Overlay() {
         override fun draw(canvas: Canvas, mapView: MapView, shadow: Boolean) {
             if (shadow) return
             val user = userPoint ?: return
             val userScreen = mapView.projection.toPixels(user, null)
+            val ux = userScreen.x.toFloat()
+            val uy = userScreen.y.toFloat()
+
             targets.take(10).forEach { item ->
                 val meters = item.estimate.meters ?: return@forEach
                 val edgeGeoPoint = destinationPoint(user, meters, 0.0)
                 val edgeScreen = mapView.projection.toPixels(edgeGeoPoint, null)
-                val radiusPx = kotlin.math.abs(edgeScreen.y - userScreen.y).toFloat()
-                    .coerceAtLeast(8f)
-                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.STROKE
-                    strokeWidth = 4f
-                    color = when {
-                        item.estimate.confidence >= 70 -> Color.parseColor("#2E9E5B")
-                        item.estimate.confidence >= 40 -> Color.parseColor("#E0A11E")
-                        else -> Color.parseColor("#9AA5AD")
+                val radiusPx = abs(edgeScreen.y - userScreen.y).toFloat().coerceAtLeast(30f)
+
+                val ringColor = when {
+                    item.estimate.confidence >= 70 -> Color.parseColor("#2E9E5B")
+                    item.estimate.confidence >= 40 -> Color.parseColor("#E0A11E")
+                    else -> Color.parseColor("#9AA5AD")
+                }
+                val ringPaint = ringPaintCache.getOrPut(ringColor) {
+                    Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        style = Paint.Style.STROKE
+                        strokeWidth = 4f
+                        color = ringColor
                     }
                 }
-                canvas.drawCircle(userScreen.x.toFloat(), userScreen.y.toFloat(), radiusPx, paint)
+                canvas.drawCircle(ux, uy, radiusPx, ringPaint)
+
+                val angleDeg = stableAngleFor(item.key)
+                val angleRad = Math.toRadians(angleDeg.toDouble())
+                val px = ux + radiusPx * sin(angleRad).toFloat()
+                val py = uy - radiusPx * cos(angleRad).toFloat()
+
+                drawPhoneMarker(canvas, px, py, ringColor)
+                drawDistanceLabel(canvas, px, py, meters)
             }
+
+            drawUserMarker(canvas, ux, uy, headingDeg)
         }
     }
 
@@ -50,7 +77,7 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         setTileSource(TileSourceFactory.MAPNIK)
         setMultiTouchControls(true)
         controller.setZoom(18.0)
-        overlays.add(ringOverlay)
+        overlays.add(radarOverlay)
     }
 
     fun setUserLocation(lat: Double, lon: Double, firstFix: Boolean) {
@@ -65,12 +92,110 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         invalidate()
     }
 
-    private var headingDeg: Float = 0f
-
     fun setHeading(degrees: Float) {
         headingDeg = degrees
-        // Reserved for a future overlay that rotates the user marker;
-        // not used to draw a fabricated bearing to BLE targets.
+        invalidate()
+    }
+
+    /** Stable pseudo-angle derived from the device key so a given phone
+     *  keeps the same on-screen position across redraws (cosmetic layout
+     *  only — not a real compass bearing). */
+    private fun stableAngleFor(key: String): Int {
+        val hash = key.hashCode()
+        return abs(hash) % 360
+    }
+
+    private fun drawUserMarker(canvas: Canvas, cx: Float, cy: Float, heading: Float) {
+        val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.parseColor("#1E6FE0")
+        }
+        val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+            color = Color.WHITE
+        }
+        // Head
+        canvas.drawCircle(cx, cy - 20f, 12f, bodyPaint)
+        canvas.drawCircle(cx, cy - 20f, 12f, outlinePaint)
+        // Body (rounded rect)
+        val bodyRect = RectF(cx - 14f, cy - 6f, cx + 14f, cy + 22f)
+        canvas.drawRoundRect(bodyRect, 10f, 10f, bodyPaint)
+        canvas.drawRoundRect(bodyRect, 10f, 10f, outlinePaint)
+
+        // Heading arrow above the head
+        canvas.save()
+        canvas.rotate(heading, cx, cy - 20f)
+        val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.parseColor("#FF5A1F")
+        }
+        val arrow = Path().apply {
+            moveTo(cx, cy - 48f)
+            lineTo(cx - 9f, cy - 30f)
+            lineTo(cx + 9f, cy - 30f)
+            close()
+        }
+        canvas.drawPath(arrow, arrowPaint)
+        val arrowOutline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.WHITE
+        }
+        canvas.drawPath(arrow, arrowOutline)
+        canvas.restore()
+    }
+
+    private fun drawPhoneMarker(canvas: Canvas, x: Float, y: Float, color: Int) {
+        val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.parseColor("#2A2A2A")
+        }
+        val screenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = color
+        }
+        val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.WHITE
+        }
+        val phoneRect = RectF(x - 9f, y - 15f, x + 9f, y + 15f)
+        canvas.drawRoundRect(phoneRect, 5f, 5f, bodyPaint)
+        canvas.drawRoundRect(phoneRect, 5f, 5f, outlinePaint)
+        val screenRect = RectF(x - 6f, y - 11f, x + 6f, y + 8f)
+        canvas.drawRect(screenRect, screenPaint)
+    }
+
+    private fun drawDistanceLabel(canvas: Canvas, x: Float, y: Float, meters: Double) {
+        val text = "≈%.1fm".format(Locale.US, meters)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#1A1A1A")
+            textSize = 26f
+            isFakeBoldText = true
+        }
+        val textWidth = textPaint.measureText(text)
+        val labelX = x + 16f
+        val labelY = y - 16f
+        val bgRect = RectF(
+            labelX - 8f,
+            labelY - 30f,
+            labelX + textWidth + 8f,
+            labelY + 8f
+        )
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.WHITE
+            setShadowLayer(6f, 0f, 2f, Color.parseColor("#40000000"))
+        }
+        canvas.drawRoundRect(bgRect, 8f, 8f, bgPaint)
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.parseColor("#DDDDDD")
+        }
+        canvas.drawRoundRect(bgRect, 8f, 8f, borderPaint)
+        canvas.drawText(text, labelX, labelY, textPaint)
     }
 
     /** Moves a distance in meters due north from an origin — used only to size
