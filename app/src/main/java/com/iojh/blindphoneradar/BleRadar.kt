@@ -13,6 +13,10 @@ import android.os.Looper
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Continuous BLE radar. Scanning is session-only and keeps restarting the BLE
+ * scan window until stop() is explicitly called. No remote device data is persisted.
+ */
 class BleRadar(
     context: Context,
     private val onUpdate: (List<DeviceObservation>) -> Unit,
@@ -34,6 +38,7 @@ class BleRadar(
             handler.postDelayed(this, 250L)
         }
     }
+
     private val restartRunnable = object : Runnable {
         override fun run() {
             if (!running.get()) return
@@ -41,19 +46,23 @@ class BleRadar(
             handler.postDelayed(this, SCAN_WINDOW_RESTART_MS)
         }
     }
+
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             try { ingest(result); consecutiveFailures = 0 }
-            catch (_: SecurityException) { fail("مجوز Bluetooth برای خواندن نتیجه کافی نیست") }
+            catch (_: SecurityException) { fail("مجوز Bluetooth برای خواندن نتیجه اسکن کافی نیست") }
             catch (t: Throwable) { fail("خطا هنگام پردازش Bluetooth: ${t.javaClass.simpleName}") }
         }
+
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
             try { results.forEach(::ingest); consecutiveFailures = 0 }
-            catch (_: SecurityException) { fail("مجوز Bluetooth برای خواندن نتایج کافی نیست") }
+            catch (_: SecurityException) { fail("مجوز Bluetooth برای خواندن نتیجه اسکن کافی نیست") }
             catch (t: Throwable) { fail("خطا هنگام پردازش نتایج Bluetooth: ${t.javaClass.simpleName}") }
         }
+
         override fun onScanFailed(errorCode: Int) {
             consecutiveFailures++
+            // Transient scanner registration failures should not turn the radar off.
             if (running.get() && consecutiveFailures < 4) {
                 handler.postDelayed({ if (running.get()) restartScanWindow() }, 500L * consecutiveFailures)
                 return
@@ -102,7 +111,9 @@ class BleRadar(
     private fun restartScanWindow() {
         if (!running.get()) return
         try { activeScanner?.stopScan(callback) } catch (_: Throwable) {}
-        if (!startScanWindow() && running.get()) handler.postDelayed({ restartScanWindow() }, 1500L)
+        if (!startScanWindow()) {
+            if (running.get()) handler.postDelayed({ restartScanWindow() }, 1500L)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -118,12 +129,25 @@ class BleRadar(
 
     private fun ingest(result: ScanResult) {
         val ephemeral = sessionKey(result.device.address)
-        tracker.update(ephemeral, result.rssi, txPower(result), null, phoneCandidateScore(result))
+        tracker.update(
+            key = ephemeral,
+            rssi = result.rssi,
+            txPower = txPower(result),
+            name = null,
+            phoneScore = phoneCandidateScore(result)
+        )
     }
 
     private fun publishSnapshot() {
-        onUpdate(tracker.snapshot().map { t ->
-            DeviceObservation(t.key, t.displayLabel, t.rssi, t.estimate, t.phoneCandidateScore, t.lastSeenMs)
+        onUpdate(tracker.snapshot().map {
+            DeviceObservation(
+                key = it.key,
+                displayLabel = it.displayLabel,
+                rssi = it.rssi,
+                estimate = it.estimate,
+                phoneCandidateScore = it.phoneCandidateScore,
+                lastSeenMs = it.lastSeenMs
+            )
         })
     }
 
@@ -136,7 +160,8 @@ class BleRadar(
         onError(message)
     }
 
-    private fun sessionKey(address: String): String = UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
+    private fun sessionKey(address: String): String =
+        UUID.nameUUIDFromBytes((sessionSalt + address).toByteArray()).toString().take(10)
 
     private fun phoneCandidateScore(result: ScanResult): Int {
         val record = result.scanRecord ?: return 25
@@ -147,7 +172,8 @@ class BleRadar(
     }
 
     @SuppressLint("MissingPermission")
-    private fun txPower(result: ScanResult): Int? = if (Build.VERSION.SDK_INT >= 26) result.txPower.takeIf { it in -100..20 } else null
+    private fun txPower(result: ScanResult): Int? =
+        if (Build.VERSION.SDK_INT >= 26) result.txPower.takeIf { it in -100..20 } else null
 
     companion object {
         private const val SCAN_WINDOW_RESTART_MS = 120_000L
