@@ -29,7 +29,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     private lateinit var status: TextView
     private lateinit var results: TextView
     private lateinit var cellular: TextView
-    private lateinit var map: RadarMapView
+    private lateinit var map: OsmRadarMapView
     private lateinit var tts: TextToSpeech
     private lateinit var locationManager: LocationManager
     private lateinit var sensorManager: SensorManager
@@ -60,11 +60,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         }
     }
 
+    private var firstLocationFix = true
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             latitude = location.latitude
             longitude = location.longitude
-            map.setData(lastItems, latitude, longitude)
+            map.setUserLocation(location.latitude, location.longitude, firstLocationFix)
+            firstLocationFix = false
         }
     }
 
@@ -101,7 +103,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         status = TextView(this).apply { textSize = 20f; text = "آماده رادار" }
         val start = Button(this).apply { text = "▶ شروع رادار"; setOnClickListener { toggle() } }
         val cellButton = Button(this).apply { text = "بررسی شبکه سیم‌کارت"; setOnClickListener { readCellular() } }
-        val clear = Button(this).apply { text = "پاک‌سازی tracker موقت"; setOnClickListener { lastItems = emptyList(); map.setData(emptyList(), latitude, longitude); results.text = "" } }
+        val clear = Button(this).apply { text = "پاک‌سازی tracker موقت"; setOnClickListener { lastItems = emptyList(); map.setTargets(emptyList()); results.text = "" } }
         val capabilities = TextView(this).apply {
             textSize = 14f
             text = CapabilityProbe(this@MainActivity).summary()
@@ -111,7 +113,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             textSize = 13f
             text = "شبکه سیم‌کارت: اطلاعات دکل خود این گوشی است، نه فاصله گوشی‌های اطراف"
         }
-        map = RadarMapView(this)
+        map = OsmRadarMapView(this)
         results = TextView(this).apply { textSize = 17f; setPadding(0, 12, 0, 12) }
 
         root.addView(status)
@@ -230,7 +232,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     }
 
     private fun render(items: List<DeviceObservation>) {
-        map.setData(items, latitude, longitude)
+        map.setTargets(items)
         if (items.isEmpty()) {
             results.text = "در این لحظه BLE advertisement قابل مشاهده‌ای نیست.\nاین به معنی نبودن گوشی در اطراف نیست؛ دستگاه مقابل باید رادیوی BLE قابل مشاهده داشته باشد."
             return

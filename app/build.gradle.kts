@@ -43,3 +43,7 @@ android {
         }
     }
 }
+
+dependencies {
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+}
