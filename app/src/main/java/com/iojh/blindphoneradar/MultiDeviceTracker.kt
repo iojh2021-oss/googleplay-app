@@ -88,7 +88,7 @@ class MultiDeviceTracker(
             val estimate = DistanceEstimator.estimate(samples, t.txPower)
             TrackedObservation(
                 key = t.key,
-                displayLabel = if (t.phoneScore >= 50) "Phone candidate" else "BLE device",
+                displayLabel = t.name ?: (if (t.phoneScore >= 50) "Phone candidate" else "BLE device"),
                 rssi = t.rssi.toInt().coerceIn(-127, 126),
                 txPower = t.txPower,
                 firstSeenMs = t.firstSeenMs,

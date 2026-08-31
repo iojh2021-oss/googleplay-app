@@ -131,13 +131,28 @@ class BleRadar(
     private fun ingest(result: ScanResult) {
         rawPacketCount++
         val ephemeral = sessionKey(result.device.address)
+        val localName = try { result.scanRecord?.deviceName?.takeIf { it.isNotBlank() } } catch (_: Throwable) { null }
         tracker.update(
             key = ephemeral,
             rssi = result.rssi,
             txPower = txPower(result),
-            name = null,
+            name = localName ?: vendorGuess(result),
             phoneScore = phoneCandidateScore(result)
         )
+    }
+
+    private fun vendorGuess(result: ScanResult): String? {
+        val record = result.scanRecord ?: return null
+        val mfg = record.manufacturerSpecificData
+        for (i in 0 until mfg.size()) {
+            when (mfg.keyAt(i)) {
+                0x004C -> return "احتمالاً آیفون"
+                0x0075 -> return "احتمالاً گوشی سامسونگ"
+                0x00E0 -> return "احتمالاً گوشی اندروید (Google)"
+                0x0006 -> return "احتمالاً دستگاه Microsoft/Windows"
+            }
+        }
+        return null
     }
 
     fun rawPacketsSeen(): Int = rawPacketCount
