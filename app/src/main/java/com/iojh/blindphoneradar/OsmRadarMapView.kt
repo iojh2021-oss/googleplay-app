@@ -65,6 +65,14 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         invalidate()
     }
 
+    private var headingDeg: Float = 0f
+
+    fun setHeading(degrees: Float) {
+        headingDeg = degrees
+        // Reserved for a future overlay that rotates the user marker;
+        // not used to draw a fabricated bearing to BLE targets.
+    }
+
     /** Moves a distance in meters due north from an origin — used only to size
      *  the on-screen ring radius, not to claim a real bearing to the target. */
     private fun destinationPoint(origin: GeoPoint, meters: Double, bearingDeg: Double): GeoPoint {
