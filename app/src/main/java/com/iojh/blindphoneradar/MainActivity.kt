@@ -193,6 +193,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             textSize = 18f
             setTextColor(Color.WHITE)
             background = startButtonDrawable(active = false)
+            stateListAnimator = null
             setPadding(0, dp(26), 0, dp(26))
             isAllCaps = false
             setOnClickListener { toggle() }
@@ -237,7 +238,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     private fun startButtonDrawable(active: Boolean): GradientDrawable = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(16).toFloat()
-        setColor(if (active) Color.parseColor("#E53935") else Color.parseColor("#2E9E5B"))
+        setColor(if (active) Color.WHITE else Color.BLACK)
+        setStroke(dp(2), Color.parseColor("#DDDDDD"))
     }
 
     private fun circularButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
@@ -431,6 +433,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             running = true
             status.text = "● رادار فعال شد — تا توقف دستی ادامه دارد"
             startButton.text = "■  توقف رادار"
+            startButton.setTextColor(Color.BLACK)
             startButton.background = startButtonDrawable(active = true)
             requestLocationUpdatesIfAllowed()
         } catch (t: Throwable) {
@@ -446,6 +449,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         } catch (_: Throwable) {}
         status.text = "■ رادار متوقف شد"
         startButton.text = "▶  شروع رادار"
+        startButton.setTextColor(Color.WHITE)
         startButton.background = startButtonDrawable(active = false)
     }
 
