@@ -2,12 +2,15 @@ package com.iojh.blindphoneradar
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -20,7 +23,7 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.widget.Button
-import android.widget.LinearLayout
+import android.widget.FrameLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import java.util.Locale
@@ -30,6 +33,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     private lateinit var results: TextView
     private lateinit var cellular: TextView
     private lateinit var map: OsmRadarMapView
+    private lateinit var startButton: Button
     private lateinit var tts: TextToSpeech
     private lateinit var locationManager: LocationManager
     private lateinit var sensorManager: SensorManager
@@ -95,36 +99,131 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     }
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20, 20, 20, 20)
-            gravity = Gravity.CENTER_HORIZONTAL
+        val root = FrameLayout(this)
+
+        map = OsmRadarMapView(this)
+        root.addView(map, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        status = TextView(this).apply {
+            textSize = 16f
+            setTextColor(Color.parseColor("#1A1A1A"))
+            setPadding(dp(28), dp(14), dp(28), dp(14))
+            text = "آماده رادار"
+            background = pillDrawable(Color.WHITE)
+            elevation = 14f
         }
-        status = TextView(this).apply { textSize = 20f; text = "آماده رادار" }
-        val start = Button(this).apply { text = "▶ شروع رادار"; setOnClickListener { toggle() } }
-        val cellButton = Button(this).apply { text = "بررسی شبکه سیم‌کارت"; setOnClickListener { readCellular() } }
-        val clear = Button(this).apply { text = "پاک‌سازی tracker موقت"; setOnClickListener { lastItems = emptyList(); map.setTargets(emptyList()); results.text = "" } }
-        val capabilities = TextView(this).apply {
-            textSize = 14f
-            text = CapabilityProbe(this@MainActivity).summary()
-            setPadding(0, 8, 0, 8)
+        root.addView(status, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            topMargin = dp(28)
+        })
+
+        val infoButton = circularButton("ⓘ") { showCapabilitiesDialog() }
+        root.addView(infoButton, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+            gravity = Gravity.TOP or Gravity.START
+            topMargin = dp(28); leftMargin = dp(20)
+        })
+
+        val clearButton = circularButton("⟲") {
+            lastItems = emptyList()
+            map.setTargets(emptyList())
+            results.text = ""
+        }
+        root.addView(clearButton, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = dp(28); rightMargin = dp(20)
+        })
+
+        val locateButton = circularButton("◎") {
+            val lat = latitude; val lon = longitude
+            if (lat != null && lon != null) map.setUserLocation(lat, lon, true)
+        }
+        root.addView(locateButton, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            bottomMargin = dp(230); rightMargin = dp(20)
+        })
+
+        val sheet = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(24), dp(20), dp(24), dp(28))
+            background = sheetDrawable()
+            elevation = 24f
         }
         cellular = TextView(this).apply {
-            textSize = 13f
-            text = "شبکه سیم‌کارت: اطلاعات دکل خود این گوشی است، نه فاصله گوشی‌های اطراف"
+            textSize = 12f
+            setTextColor(Color.parseColor("#8A97A2"))
+            text = "شبکه سیم‌کارت: برای بررسی ضربه بزنید"
+            setOnClickListener { readCellular() }
         }
-        map = OsmRadarMapView(this)
-        results = TextView(this).apply { textSize = 17f; setPadding(0, 12, 0, 12) }
+        results = TextView(this).apply {
+            textSize = 15f
+            setPadding(0, dp(10), 0, dp(10))
+            maxLines = 6
+        }
+        val resultsScroll = ScrollView(this).apply { addView(results) }
+        startButton = Button(this).apply {
+            text = "▶  شروع رادار"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            background = startButtonDrawable(active = false)
+            setPadding(0, dp(26), 0, dp(26))
+            isAllCaps = false
+            setOnClickListener { toggle() }
+        }
 
-        root.addView(status)
-        root.addView(capabilities)
-        root.addView(start)
-        root.addView(cellButton)
-        root.addView(clear)
-        root.addView(map, LinearLayout.LayoutParams(-1, 0, 1.3f))
-        root.addView(cellular)
-        root.addView(ScrollView(this).apply { addView(results) }, LinearLayout.LayoutParams(-1, 0, 0.9f))
+        sheet.addView(cellular)
+        sheet.addView(resultsScroll, android.widget.LinearLayout.LayoutParams(-1, dp(150)))
+        sheet.addView(startButton, android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+
+        root.addView(sheet, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM
+        })
+
         setContentView(root)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun pillDrawable(color: Int): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(28).toFloat()
+        setColor(color)
+    }
+
+    private fun sheetDrawable(): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadii = floatArrayOf(
+            dp(24).toFloat(), dp(24).toFloat(),
+            dp(24).toFloat(), dp(24).toFloat(),
+            0f, 0f, 0f, 0f
+        )
+        setColor(Color.WHITE)
+    }
+
+    private fun startButtonDrawable(active: Boolean): GradientDrawable = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(16).toFloat()
+        setColor(if (active) Color.parseColor("#E53935") else Color.parseColor("#2E9E5B"))
+    }
+
+    private fun circularButton(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 22f
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#1A1A1A"))
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.WHITE)
+        }
+        elevation = 14f
+        setOnClickListener { onClick() }
+    }
+
+    private fun showCapabilitiesDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("قابلیت‌های گوشی")
+            .setMessage(CapabilityProbe(this).summary())
+            .setPositiveButton("باشه", null)
+            .show()
     }
 
     private fun toggle() {
@@ -181,6 +280,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
             running = true
             status.text = "● رادار فعال شد — تا توقف دستی ادامه دارد"
+            startButton.text = "■  توقف رادار"
+            startButton.background = startButtonDrawable(active = true)
             requestLocationUpdatesIfAllowed()
         } catch (t: Throwable) {
             running = false
@@ -194,6 +295,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             startService(Intent(this, RadarKeepAliveService::class.java).setAction(RadarKeepAliveService.ACTION_STOP))
         } catch (_: Throwable) {}
         status.text = "■ رادار متوقف شد"
+        startButton.text = "▶  شروع رادار"
+        startButton.background = startButtonDrawable(active = false)
     }
 
     private fun registerRadarReceiver() {
