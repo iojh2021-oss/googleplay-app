@@ -60,8 +60,20 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
                 RadarKeepAliveService.ACTION_STATUS -> {
                     status.text = intent.getStringExtra(RadarKeepAliveService.EXTRA_STATUS) ?: "وضعیت نامشخص"
                 }
+                RadarKeepAliveService.ACTION_RAW_COUNT -> {
+                    rawPacketCount = intent.getIntExtra(RadarKeepAliveService.EXTRA_RAW_COUNT, 0)
+                    updateStatusWithRawCount()
+                }
             }
         }
+    }
+
+    private var rawPacketCount = 0
+
+    private fun updateStatusWithRawCount() {
+        if (!running) return
+        val base = status.text.toString().substringBefore(" | خام:")
+        status.text = "$base | خام: $rawPacketCount"
     }
 
     private var firstLocationFix = true
@@ -326,6 +338,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         val filter = IntentFilter().apply {
             addAction(RadarKeepAliveService.ACTION_UPDATE)
             addAction(RadarKeepAliveService.ACTION_STATUS)
+            addAction(RadarKeepAliveService.ACTION_RAW_COUNT)
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(radarReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else registerReceiver(radarReceiver, filter)

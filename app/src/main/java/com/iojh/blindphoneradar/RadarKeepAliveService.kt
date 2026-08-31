@@ -40,6 +40,7 @@ class RadarKeepAliveService : Service() {
             onUpdate = { items -> broadcastSnapshot(items) },
             onError = { message -> broadcastStatus(message) }
         )
+        startRawCounterTicker()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -61,7 +62,22 @@ class RadarKeepAliveService : Service() {
         return START_STICKY
     }
 
+    private val tickHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val rawCounterTick = object : Runnable {
+        override fun run() {
+            val count = radar?.rawPacketsSeen() ?: 0
+            sendBroadcast(Intent(ACTION_RAW_COUNT).setPackage(packageName).putExtra(EXTRA_RAW_COUNT, count))
+            tickHandler.postDelayed(this, 1000L)
+        }
+    }
+
+    private fun startRawCounterTicker() {
+        tickHandler.removeCallbacks(rawCounterTick)
+        tickHandler.post(rawCounterTick)
+    }
+
     private fun stopRadar() {
+        tickHandler.removeCallbacks(rawCounterTick)
         try { radar?.stop() } catch (_: Throwable) {}
         radar = null
     }
@@ -115,6 +131,8 @@ class RadarKeepAliveService : Service() {
         const val ACTION_STATUS = "com.iojh.blindphoneradar.STATUS"
         const val EXTRA_ITEMS = "items"
         const val EXTRA_STATUS = "status"
+        const val ACTION_RAW_COUNT = "com.iojh.blindphoneradar.RAW_COUNT"
+        const val EXTRA_RAW_COUNT = "raw_count"
         const val CHANNEL_ID = "radar_scanning"
         const val NOTIFICATION_ID = 1001
     }

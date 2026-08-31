@@ -30,6 +30,7 @@ class BleRadar(
     private val running = AtomicBoolean(false)
     private var activeScanner: BluetoothLeScanner? = null
     private var consecutiveFailures = 0
+    private var rawPacketCount = 0
 
     private val publishRunnable = object : Runnable {
         override fun run() {
@@ -128,6 +129,7 @@ class BleRadar(
     fun clear() { tracker.clear(); onUpdate(emptyList()) }
 
     private fun ingest(result: ScanResult) {
+        rawPacketCount++
         val ephemeral = sessionKey(result.device.address)
         tracker.update(
             key = ephemeral,
@@ -137,6 +139,8 @@ class BleRadar(
             phoneScore = phoneCandidateScore(result)
         )
     }
+
+    fun rawPacketsSeen(): Int = rawPacketCount
 
     private fun publishSnapshot() {
         onUpdate(tracker.snapshot().map {
