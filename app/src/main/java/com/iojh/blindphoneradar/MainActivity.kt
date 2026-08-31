@@ -347,7 +347,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             items.take(30).forEachIndexed { index, item ->
                 val d = item.estimate
                 append("${index + 1}. ${item.displayLabel}\n")
-                if (d.meters != null) append("   حدود %.1f m | بازه %.1f–%.1f m | اطمینان ${d.confidence}%\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
+                if (d.meters != null) append("   حدود %.1f m | بازه %.1f–%.1f m | اطمینان ${d.confidence}%%\n".format(Locale.US, d.meters, d.minMeters, d.maxMeters))
                 else append("   فاصله نامشخص\n")
                 append("   RSSI ${item.rssi} | امتیاز گوشی ${item.phoneCandidateScore}% | ${d.method}\n\n")
             }
