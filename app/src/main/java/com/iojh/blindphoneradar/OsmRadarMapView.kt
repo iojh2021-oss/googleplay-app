@@ -146,14 +146,14 @@ class OsmRadarMapView(context: Context) : MapView(context) {
         canvas.restore()
     }
 
-    private fun drawPhoneMarker(canvas: Canvas, x: Float, y: Float, color: Int) {
+    private fun drawPhoneMarker(canvas: Canvas, x: Float, y: Float, phoneColor: Int) {
         val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
             color = Color.parseColor("#2A2A2A")
         }
         val screenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            color = color
+            color = phoneColor
         }
         val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
