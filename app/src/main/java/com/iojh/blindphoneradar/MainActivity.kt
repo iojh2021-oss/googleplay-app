@@ -23,8 +23,12 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.widget.Button
+import android.content.SharedPreferences
+import android.view.View
 import android.widget.FrameLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import java.util.Locale
 
@@ -45,6 +49,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
     private var lastSpokenKey = ""
     private var lastSpokenAt = 0L
     private var receiverRegistered = false
+    private lateinit var prefs: SharedPreferences
+    private var alarmEnabled = true
+    private var alarmThresholdMeters = 2.0
+    private var lastAlarmTriggeredAt = 0L
+    private lateinit var alarmOverlay: View
 
     private val radarReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -93,6 +102,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        loadSettings()
         buildUi()
     }
 
@@ -155,6 +165,12 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             bottomMargin = dp(230); rightMargin = dp(20)
         })
 
+        val settingsButton = circularButton("⚙") { showSettingsDialog() }
+        root.addView(settingsButton, FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            bottomMargin = dp(230); leftMargin = dp(20)
+        })
+
         val sheet = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(dp(24), dp(20), dp(24), dp(28))
@@ -190,6 +206,13 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
         root.addView(sheet, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM
         })
+
+        alarmOverlay = View(this).apply {
+            setBackgroundColor(Color.parseColor("#E53935"))
+            alpha = 0f
+            visibility = View.GONE
+        }
+        root.addView(alarmOverlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         setContentView(root)
     }
@@ -250,6 +273,100 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
             .setMessage(message)
             .setPositiveButton("باشه", null)
             .show()
+    }
+
+    private fun loadSettings() {
+        prefs = getSharedPreferences("radar_settings", Context.MODE_PRIVATE)
+        alarmEnabled = prefs.getBoolean("alarm_enabled", true)
+        alarmThresholdMeters = prefs.getFloat("alarm_threshold", 2.0f).toDouble()
+    }
+
+    private fun saveSettings() {
+        prefs.edit()
+            .putBoolean("alarm_enabled", alarmEnabled)
+            .putFloat("alarm_threshold", alarmThresholdMeters.toFloat())
+            .apply()
+    }
+
+    private fun showSettingsDialog() {
+        val container = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(dp(32), dp(24), dp(32), dp(8))
+        }
+        val switchRow = Switch(this).apply {
+            text = "هشدار نزدیک شدن گوشی"
+            isChecked = alarmEnabled
+        }
+        container.addView(switchRow)
+
+        val thresholdLabel = TextView(this).apply {
+            text = "فاصله هشدار: ${alarmThresholdMeters.toInt()} متر"
+            setPadding(0, dp(20), 0, dp(4))
+        }
+        container.addView(thresholdLabel)
+
+        val seek = SeekBar(this).apply {
+            max = 9
+            progress = (alarmThresholdMeters.toInt() - 1).coerceIn(0, 9)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    thresholdLabel.text = "فاصله هشدار: ${progress + 1} متر"
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+            })
+        }
+        container.addView(seek)
+
+        AlertDialog.Builder(this)
+            .setTitle("تنظیمات هشدار")
+            .setView(container)
+            .setPositiveButton("ذخیره") { _, _ ->
+                alarmEnabled = switchRow.isChecked
+                alarmThresholdMeters = (seek.progress + 1).toDouble()
+                saveSettings()
+            }
+            .setNegativeButton("انصراف", null)
+            .show()
+    }
+
+    private fun triggerAlarmIfNeeded(items: List<DeviceObservation>) {
+        if (!alarmEnabled) return
+        val close = items.firstOrNull {
+            it.phoneCandidateScore >= 50 && it.estimate.confidence >= 45 &&
+                (it.estimate.meters ?: Double.MAX_VALUE) <= alarmThresholdMeters
+        } ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastAlarmTriggeredAt < 4000L) return
+        lastAlarmTriggeredAt = now
+        fireAlarm()
+    }
+
+    private fun fireAlarm() {
+        try {
+            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator?.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 200, 100, 200, 100, 200), -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(longArrayOf(0, 200, 100, 200, 100, 200), -1)
+            }
+        } catch (_: Throwable) {}
+        try {
+            val uri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION)
+            android.media.RingtoneManager.getRingtone(this, uri)?.play()
+        } catch (_: Throwable) {}
+        flashAlarmOverlay()
+    }
+
+    private fun flashAlarmOverlay() {
+        alarmOverlay.visibility = View.VISIBLE
+        alarmOverlay.alpha = 0f
+        alarmOverlay.animate().alpha(0.55f).setDuration(200).withEndAction {
+            alarmOverlay.animate().alpha(0f).setDuration(600).withEndAction {
+                alarmOverlay.visibility = View.GONE
+            }.start()
+        }.start()
     }
 
     private fun showCapabilitiesDialog() {
@@ -371,6 +488,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener, SensorEventListene
 
     private fun render(items: List<DeviceObservation>) {
         map.setTargets(items)
+        triggerAlarmIfNeeded(items)
         if (items.isEmpty()) {
             results.text = "در این لحظه BLE advertisement قابل مشاهده‌ای نیست.\nاین به معنی نبودن گوشی در اطراف نیست؛ دستگاه مقابل باید رادیوی BLE قابل مشاهده داشته باشد."
             return
